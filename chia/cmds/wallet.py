@@ -243,10 +243,15 @@ def send_cmd(
     type=click.Choice([x.name.lower() for x in WalletType]),
     default=None,
 )
-def show_cmd(wallet_rpc_port: Optional[int], fingerprint: int, wallet_type: Optional[str]) -> None:
+@click.option("-c", "--condensed", help="Summarise in a more condensed form", is_flag=True, type=bool, default=False)
+def show_cmd(wallet_rpc_port: Optional[int], fingerprint: int, wallet_type: Optional[str], condensed: bool) -> None:
     from .wallet_funcs import print_balances
 
-    asyncio.run(print_balances(wallet_rpc_port, fingerprint, WalletType[wallet_type.upper()] if wallet_type else None))
+    asyncio.run(
+        print_balances(
+            wallet_rpc_port, fingerprint, condensed, WalletType[wallet_type.upper()] if wallet_type else None
+        )
+    )
 
 
 @wallet_cmd.command("get_address", help="Get a wallet receive address")

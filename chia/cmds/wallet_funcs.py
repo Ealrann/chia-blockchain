@@ -808,19 +808,21 @@ def wallet_coin_unit(typ: WalletType, address_prefix: str) -> Tuple[str, int]:  
     return "", units["mojo"]
 
 
-def print_balance(amount: int, scale: int, address_prefix: str, *, decimal_only: bool = False) -> str:
+def print_balance(
+    amount: int, scale: int, address_prefix: str, *, decimal_only: bool = False, print_mojo: bool = True
+) -> str:
     if decimal_only:  # dont use scientific notation.
         final_amount = f"{amount / scale:.12f}"
     else:
         final_amount = f"{amount / scale}"
-    ret = f"{final_amount} {address_prefix} "
-    if scale > 1:
-        ret += f"({amount} mojo)"
+    ret = f"{final_amount} {address_prefix}"
+    if print_mojo and scale > 1:
+        ret += f" ({amount} mojo)"
     return ret
 
 
 async def print_balances(
-    wallet_rpc_port: Optional[int], fp: Optional[int], wallet_type: Optional[WalletType] = None
+    wallet_rpc_port: Optional[int], fp: Optional[int], condensed: bool, wallet_type: Optional[WalletType] = None
 ) -> None:  # pragma: no cover
     async with get_wallet_client(wallet_rpc_port, fp) as (wallet_client, fingerprint, config):
         summaries_response = await wallet_client.get_wallets(wallet_type)
@@ -843,6 +845,8 @@ async def print_balances(
                 print(f"\nNo wallets{type_hint}available for fingerprint: {fingerprint}")
             else:
                 print(f"Balances, fingerprint: {fingerprint}")
+
+            first_iteration: bool = True
             for summary in summaries_response:
                 indent: str = "   "
                 # asset_id currently contains both the asset ID and TAIL program bytes concatenated together.
@@ -852,45 +856,74 @@ async def print_balances(
                 balances = await wallet_client.get_wallet_balance(wallet_id)
                 typ = WalletType(int(summary["type"]))
                 address_prefix, scale = wallet_coin_unit(typ, address_prefix)
-                total_balance: str = print_balance(balances["confirmed_wallet_balance"], scale, address_prefix)
-                unconfirmed_wallet_balance: str = print_balance(
-                    balances["unconfirmed_wallet_balance"], scale, address_prefix
+                total_balance: str = print_balance(
+                    balances["confirmed_wallet_balance"], scale, address_prefix, print_mojo=not condensed
                 )
-                spendable_balance: str = print_balance(balances["spendable_balance"], scale, address_prefix)
-                my_did: Optional[str] = None
-                ljust = 23
-                if typ == WalletType.CRCAT:
-                    ljust = 36
-                print()
-                print(f"{summary['name']}:")
-                print(f"{indent}{'-Total Balance:'.ljust(ljust)} {total_balance}")
-                if typ == WalletType.CRCAT:
+                unconfirmed_wallet_balance: str = print_balance(
+                    balances["unconfirmed_wallet_balance"], scale, address_prefix, print_mojo=not condensed
+                )
+                spendable_balance: str = print_balance(
+                    balances["spendable_balance"], scale, address_prefix, print_mojo=not condensed
+                )
+
+                if condensed:
+                    ljust_id = 3
+                    ljust = 22
+                    ljust_amount = 22
+
+                    if first_iteration:
+                        print()
+                        print(
+                            f"{'ID'.ljust(ljust_id)} "
+                            f"{'Name'.ljust(ljust)} "
+                            f"{'Total balance'.ljust(ljust_amount)} "
+                            f"{'Spendable balance'}"
+                        )
+                        first_iteration = False
+
+                    full_name = summary['name']
+                    name = (full_name[:ljust-2] + '..') if len(full_name) > ljust else full_name
                     print(
-                        f"{indent}{'-Balance Pending VC Approval:'.ljust(ljust)} "
-                        f"{print_balance(balances['pending_approval_balance'], scale, address_prefix)}"
+                        f"{str(wallet_id).ljust(ljust_id)} "
+                        f"{name.ljust(ljust)} "
+                        f"{total_balance.ljust(ljust_amount)} "
+                        f"{spendable_balance}"
                     )
-                print(f"{indent}{'-Pending Total Balance:'.ljust(ljust)} {unconfirmed_wallet_balance}")
-                print(f"{indent}{'-Spendable:'.ljust(ljust)} {spendable_balance}")
-                print(f"{indent}{'-Type:'.ljust(ljust)} {typ.name}")
-                if typ == WalletType.DECENTRALIZED_ID:
-                    get_did_response = await wallet_client.get_did_id(wallet_id)
-                    my_did = get_did_response["my_did"]
-                    print(f"{indent}{'-DID ID:'.ljust(ljust)} {my_did}")
-                elif typ == WalletType.NFT:
-                    get_did_response = await wallet_client.get_nft_wallet_did(wallet_id)
-                    my_did = get_did_response["did_id"]
-                    if my_did is not None and len(my_did) > 0:
+                else:
+                    my_did: Optional[str] = None
+                    ljust = 23
+                    if typ == WalletType.CRCAT:
+                        ljust = 36
+                    print()
+                    print(f"{summary['name']}:")
+                    print(f"{indent}{'-Total Balance:'.ljust(ljust)} {total_balance}")
+                    if typ == WalletType.CRCAT:
+                        print(
+                            f"{indent}{'-Balance Pending VC Approval:'.ljust(ljust)} "
+                            f"{print_balance(balances['pending_approval_balance'], scale, address_prefix)}"
+                        )
+                    print(f"{indent}{'-Pending Total Balance:'.ljust(ljust)} {unconfirmed_wallet_balance}")
+                    print(f"{indent}{'-Spendable:'.ljust(ljust)} {spendable_balance}")
+                    print(f"{indent}{'-Type:'.ljust(ljust)} {typ.name}")
+                    if typ == WalletType.DECENTRALIZED_ID:
+                        get_did_response = await wallet_client.get_did_id(wallet_id)
+                        my_did = get_did_response["my_did"]
                         print(f"{indent}{'-DID ID:'.ljust(ljust)} {my_did}")
-                elif typ == WalletType.DAO:
-                    get_id_response = await wallet_client.dao_get_treasury_id(wallet_id)
-                    treasury_id = get_id_response["treasury_id"][2:]
-                    print(f"{indent}{'-Treasury ID:'.ljust(ljust)} {treasury_id}")
-                elif typ == WalletType.DAO_CAT:
-                    cat_asset_id = summary["data"][32:96]
-                    print(f"{indent}{'-Asset ID:'.ljust(ljust)} {cat_asset_id}")
-                elif len(asset_id) > 0:
-                    print(f"{indent}{'-Asset ID:'.ljust(ljust)} {asset_id}")
-                print(f"{indent}{'-Wallet ID:'.ljust(ljust)} {wallet_id}")
+                    elif typ == WalletType.NFT:
+                        get_did_response = await wallet_client.get_nft_wallet_did(wallet_id)
+                        my_did = get_did_response["did_id"]
+                        if my_did is not None and len(my_did) > 0:
+                            print(f"{indent}{'-DID ID:'.ljust(ljust)} {my_did}")
+                    elif typ == WalletType.DAO:
+                        get_id_response = await wallet_client.dao_get_treasury_id(wallet_id)
+                        treasury_id = get_id_response["treasury_id"][2:]
+                        print(f"{indent}{'-Treasury ID:'.ljust(ljust)} {treasury_id}")
+                    elif typ == WalletType.DAO_CAT:
+                        cat_asset_id = summary["data"][32:96]
+                        print(f"{indent}{'-Asset ID:'.ljust(ljust)} {cat_asset_id}")
+                    elif len(asset_id) > 0:
+                        print(f"{indent}{'-Asset ID:'.ljust(ljust)} {asset_id}")
+                    print(f"{indent}{'-Wallet ID:'.ljust(ljust)} {wallet_id}")
 
         print(" ")
         trusted_peers: dict[str, str] = config["wallet"].get("trusted_peers", {})
