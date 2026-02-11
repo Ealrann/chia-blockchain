@@ -337,6 +337,17 @@ class FullNode:
                         )
                     # Can be called outside of priority_mutex
                     await self.peak_post_processing_2(full_peak, None, state_change_summary, ppp_result)
+
+                compact_proof_import_file_cfg = self.config.get("compact_proof_import_file")
+                compact_proof_import_file = (
+                    compact_proof_import_file_cfg.strip() if isinstance(compact_proof_import_file_cfg, str) else ""
+                )
+                if compact_proof_import_file != "":
+                    compact_proof_import_path = Path(compact_proof_import_file)
+                    if not compact_proof_import_path.is_absolute():
+                        compact_proof_import_path = path_from_root(self.root_path, compact_proof_import_file)
+                    await self.import_compact_proofs_txt(compact_proof_import_path)
+
                 if self.config["send_uncompact_interval"] != 0:
                     sanitize_weight_proof_only = False
                     if "sanitize_weight_proof_only" in self.config:
@@ -3107,6 +3118,56 @@ class FullNode:
                     f" rolling back: {e} {traceback.format_exc()}"
                 )
                 raise
+
+    async def import_compact_proofs_txt(self, import_path: Path) -> None:
+        self.log.info(f"Starting compact proof import from {import_path}")
+
+        rows_seen = 0
+        applied = 0
+        skipped = 0
+
+        with import_path.open("r", encoding="utf-8") as f:
+            next(f, None)  # header
+            for raw_line in f:
+                line = raw_line.rstrip("\r\n")
+                rows_seen += 1
+                respond_hex = line.rsplit("\t", maxsplit=1)[-1]
+                request = full_node_protocol.RespondCompactVDF.from_bytes(bytes.fromhex(respond_hex))
+                field_vdf = CompressibleVDFField(int(request.field_vdf))
+                if not await self._can_accept_compact_proof(
+                    request.vdf_info, request.vdf_proof, request.height, request.header_hash, field_vdf
+                ):
+                    skipped += 1
+                    continue
+
+                async with self.blockchain.compact_proof_lock:
+                    if self.blockchain.seen_compact_proofs(request.vdf_info, request.height):
+                        skipped += 1
+                        continue
+                    replaced = await self._replace_proof(
+                        request.vdf_info, request.vdf_proof, request.header_hash, field_vdf
+                    )
+                if replaced:
+                    applied += 1
+                else:
+                    skipped += 1
+
+                if rows_seen % 50_000 == 0:
+                    self.log.info(
+                        "compact proof import progress file=%s rows=%s applied=%s skipped=%s",
+                        import_path,
+                        rows_seen,
+                        applied,
+                        skipped,
+                    )
+
+        self.log.info(
+            "compact proof import complete file=%s rows=%s applied=%s skipped=%s",
+            import_path,
+            rows_seen,
+            applied,
+            skipped,
+        )
 
     async def add_compact_proof_of_time(self, request: timelord_protocol.RespondCompactProofOfTime) -> None:
         peak = self.blockchain.get_peak()
