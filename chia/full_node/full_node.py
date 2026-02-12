@@ -346,7 +346,7 @@ class FullNode:
                     compact_proof_import_path = Path(compact_proof_import_file)
                     if not compact_proof_import_path.is_absolute():
                         compact_proof_import_path = path_from_root(self.root_path, compact_proof_import_file)
-                    await self.import_compact_proofs_txt(compact_proof_import_path)
+                    await self.import_compact_proofs_file(compact_proof_import_path)
 
                 if self.config["send_uncompact_interval"] != 0:
                     sanitize_weight_proof_only = False
@@ -3119,6 +3119,24 @@ class FullNode:
                 )
                 raise
 
+    async def import_compact_proofs_file(self, import_path: Path) -> None:
+        if import_path.suffix.lower() == ".sqlite":
+            await self.import_compact_proofs_sqlite(import_path)
+            return
+        await self.import_compact_proofs_txt(import_path)
+
+    async def _apply_imported_compact_proof(self, request: full_node_protocol.RespondCompactVDF) -> bool:
+        field_vdf = CompressibleVDFField(int(request.field_vdf))
+        if not await self._can_accept_compact_proof(
+            request.vdf_info, request.vdf_proof, request.height, request.header_hash, field_vdf
+        ):
+            return False
+
+        async with self.blockchain.compact_proof_lock:
+            if self.blockchain.seen_compact_proofs(request.vdf_info, request.height):
+                return False
+            return await self._replace_proof(request.vdf_info, request.vdf_proof, request.header_hash, field_vdf)
+
     async def import_compact_proofs_txt(self, import_path: Path) -> None:
         self.log.info(f"Starting compact proof import from {import_path}")
 
@@ -3133,21 +3151,42 @@ class FullNode:
                 rows_seen += 1
                 respond_hex = line.rsplit("\t", maxsplit=1)[-1]
                 request = full_node_protocol.RespondCompactVDF.from_bytes(bytes.fromhex(respond_hex))
-                field_vdf = CompressibleVDFField(int(request.field_vdf))
-                if not await self._can_accept_compact_proof(
-                    request.vdf_info, request.vdf_proof, request.height, request.header_hash, field_vdf
-                ):
+                if await self._apply_imported_compact_proof(request):
+                    applied += 1
+                else:
                     skipped += 1
-                    continue
 
-                async with self.blockchain.compact_proof_lock:
-                    if self.blockchain.seen_compact_proofs(request.vdf_info, request.height):
-                        skipped += 1
-                        continue
-                    replaced = await self._replace_proof(
-                        request.vdf_info, request.vdf_proof, request.header_hash, field_vdf
+                if rows_seen % 50_000 == 0:
+                    self.log.info(
+                        "compact proof import progress file=%s rows=%s applied=%s skipped=%s",
+                        import_path,
+                        rows_seen,
+                        applied,
+                        skipped,
                     )
-                if replaced:
+
+        self.log.info(
+            "compact proof import complete file=%s rows=%s applied=%s skipped=%s",
+            import_path,
+            rows_seen,
+            applied,
+            skipped,
+        )
+
+    async def import_compact_proofs_sqlite(self, import_path: Path) -> None:
+        self.log.info(f"Starting compact proof import from {import_path}")
+
+        rows_seen = 0
+        applied = 0
+        skipped = 0
+
+        db_uri = f"{import_path.resolve().as_uri()}?mode=ro"
+        with contextlib.closing(sqlite3.connect(db_uri, uri=True)) as conn:
+            conn.execute("PRAGMA query_only = ON")
+            for (respond_bytes,) in conn.execute("SELECT respond_compact_vdf FROM compact_proofs ORDER BY event_id ASC"):
+                rows_seen += 1
+                request = full_node_protocol.RespondCompactVDF.from_bytes(bytes(respond_bytes))
+                if await self._apply_imported_compact_proof(request):
                     applied += 1
                 else:
                     skipped += 1

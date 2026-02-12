@@ -404,9 +404,10 @@ full_node:
   sanitize_weight_proof_only: False
   # timeout for weight proof request
   weight_proof_timeout: &weight_proof_timeout 360
-  # Optional one-shot startup import of compact proofs from a TSV file.
-  # Expected format is the bbr_scrap exporter output, with
-  # "respond_compact_vdf_hex" as the last column.
+  # Optional one-shot startup import of compact proofs from bbr_scrap output.
+  # Supported formats:
+  # - .txt (TSV exporter output, with "respond_compact_vdf_hex" as the last column)
+  # - .sqlite (reads compact_proofs.respond_compact_vdf in read-only mode)
   # Leave empty to disable import.
   compact_proof_import_file: ""
 
